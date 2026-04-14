@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+checkpoints/
+.vscode/
+.idea/
+.DS_Store
+predictions/
+.cache/
+best_weights/
+data/annotator.py
+TODO
+data/assets

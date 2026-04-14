@@ -1,0 +1,10 @@
+jax[cuda]
+jaxlib
+flax
+optax
+numpy
+matplotlib
+opencv-python
+Pillow
+fonttools
+tqdm
