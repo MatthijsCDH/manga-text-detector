@@ -1,19 +1,20 @@
 import os
 import glob
-import dataclasses
-
+import sys
+import gc
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 
 from model.network import NeuralNetwork
 from configs.default import CFG_INFERENCE
+from pathlib import Path
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 IMAGE_DIR      = "data/assets/One-Punchman_pages"
 ANNOTATION_DIR = "data/assets/Annotations"
 CHECKPOINT_DIR = "checkpoints"
-
+SELF_TRAINING_DIR = "data/assets/Self_training"
 
 class Inference:
     def __init__(self, cfg=CFG_INFERENCE):
@@ -22,6 +23,7 @@ class Inference:
         self.W     = cfg.g.W
         self.C     = cfg.g.C
         self.model = None
+        self.sample_check = cfg.sample_checking
 
     def build_model(self):
         self.model = NeuralNetwork(self.cfg)
@@ -125,6 +127,21 @@ class Inference:
             print(f"  #{rank}  {r['name']}  mean={r['mean_dice']:.4f}  (char={r['char_dice']:.4f}, affin={r['affin_dice']:.4f})")
         print(f"{'─'*60}")
         return results
+  
+    def save_self_training(self, fname_stem, x_sample, y_pred_sample, out_dir=SELF_TRAINING_DIR):
+        out_path = Path(out_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+        save_path = out_path / f"{fname_stem}.npz"
+        targets = y_pred_sample.copy()
+        targets[:, :, 0] = np.where(targets[:, :, 0] >= 0.5, targets[:, :, 0], 0.0)
+        targets[:, :, 1] = np.where(targets[:, :, 1] >= 0.5, targets[:, :, 1], 0.0)
+
+        np.savez_compressed(
+            save_path,
+            image   = x_sample,
+            targets = targets,
+        )
+        print(f"Saved {save_path.name}")
 
     def run(self):
         self.build_model()
@@ -132,15 +149,44 @@ class Inference:
             f for f in os.listdir(IMAGE_DIR)
             if f.lower().endswith((".png", ".jpg", ".jpeg"))
         )
-        for fname in image_files:
+        n = len(image_files)
+        for idx, fname in enumerate(image_files):
+            stem = Path(fname).stem
+            save_path = Path(SELF_TRAINING_DIR) / f"{stem}.npz"
+            if save_path.exists():
+                continue
             img = self.load_image(os.path.join(IMAGE_DIR, fname))
-            self.model.plot_predictions(img)
-            self.model.heatmap_decoder(img)
-
+            x_sample, y_pred_sample = self.model.plot_predictions(img, sample_check = self.sample_check)
+            if self.sample_check:
+                while True:
+                    try:
+                        ans = input("Save as training sample? [Yes/No]").strip().lower()
+                    except KeyboardInterrupt:
+                        raise
+                    if ans in ("y", "n", ""):
+                        break
+                    print("Enter y or n.")
+                plt.close("all")
+                if ans == "y":
+                    self.save_self_training(stem, x_sample, y_pred_sample)
+                else:
+                    print("Discarded.")
+            
+    def cleanup(self):
+        plt.close("all")
+        if self.model is not None:
+            self.model.release_gpu()
+            del self.model
+            self.model = None
+        gc.collect()
 
 if __name__ == "__main__":
     try:
         inf = Inference(CFG_INFERENCE)
+        #inf.compare_weights()
         inf.run()
     except KeyboardInterrupt:
         print("Interrupted.")
+    finally:
+        inf.cleanup()
+        sys.exit(0)

@@ -14,6 +14,7 @@ jax.config.update("jax_compilation_cache_dir", _CACHE_DIR)
 
 import time
 import sys
+import gc
 import threading
 import multiprocessing as mp
 from functools import partial
@@ -1169,6 +1170,12 @@ class NeuralNetwork:
         if not inference:
             print(f"Loaded weights from {self.load_filepath}")
 
+    def release_gpu(self):
+        self.state  = None
+        self.params = None
+        gc.collect()
+        jax.clear_caches()  
+
     def predict(self, X):
         return NeuralNetwork.forward_propagation(
             self.state.params["net"], X, self.num_layers,
@@ -1231,86 +1238,91 @@ class NeuralNetwork:
         plt.savefig("predictions/lambda_history.png", dpi=150, bbox_inches="tight")
         plt.show()
 
-    def plot_predictions(self, x_test, y_test=None):
-        x_batch       = x_test[None, ...]
-        x_batch       = self.NHWC_check(x_batch)
-        y_pred        = self.predict(x_batch)
-        x_sample      = x_batch[0]
-        y_pred_sample = y_pred[0]
-
-        if y_test is not None:
-            y_batch       = y_test[None, ...]
-            y_true_sample = y_batch[0]
-
-            fig, ax = plt.subplots(2, 2, figsize=(16, 16))
-
-            # True row
-            ax[0, 0].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
-            ax[0, 0].imshow(y_true_sample[:, :, 0], cmap="jet", alpha=0.6)
-            ax[0, 0].set_title("True - Character")
-
-            ax[0, 1].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
-            ax[0, 1].imshow(y_true_sample[:, :, 1], cmap="hot", alpha=0.6)
-            ax[0, 1].set_title("True - Affinity")
-
-            # Predicted row
-            ax[1, 0].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
-            ax[1, 0].imshow(y_pred_sample[:, :, 0], cmap="jet", alpha=0.6)
-            ax[1, 0].set_title("Predicted - Character")
-
-            ax[1, 1].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
-            ax[1, 1].imshow(y_pred_sample[:, :, 1], cmap="hot", alpha=0.6)
-            ax[1, 1].set_title("Predicted - Affinity")
-
-            for i in range(2):
-                for j in range(2):
-                    ax[i, j].axis("off")
-        else:
-            fig, ax = plt.subplots(1, 2, figsize=(16, 9))
-
-            ax[0].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
-            ax[0].imshow(y_pred_sample[:, :, 0], cmap="jet", alpha=0.6)
-            ax[0].set_title("Predicted - Character")
-            ax[0].axis("off")
-
-            ax[1].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
-            ax[1].imshow(y_pred_sample[:, :, 1], cmap="hot", alpha=0.6)
-            ax[1].set_title("Predicted - Affinity")
-            ax[1].axis("off")
-
-        plt.tight_layout()
-        plt.show()
-
-    def heatmap_decoder(self, x_test):
-        x_batch       = x_test[None, ...]
-        x_batch       = self.NHWC_check(x_batch)
-        y_pred        = self.predict(x_batch)
-        x_sample      = x_batch[0]
-        y_pred_sample = y_pred[0]
-
-        char_thresh     = 0.5
-        affinity_thresh = 0.5
-
-        char_heatmap     = y_pred_sample[:, :, 0]
-        affinity_heatmap = y_pred_sample[:, :, 1]
-
-        print(f"char     min={char_heatmap.min():.3f}  max={char_heatmap.max():.3f}  mean={char_heatmap.mean():.3f}")
-        print(f"affinity min={affinity_heatmap.min():.3f}  max={affinity_heatmap.max():.3f}  mean={affinity_heatmap.mean():.3f}")
-
-        char_mask = char_heatmap > char_thresh
+    @staticmethod
+    def heatmap_decoder(x_sample, y_heatmap, ax, char_thresh, affinity_thresh, title):
+        char_heatmap     = np.array(y_heatmap[:, :, 0])
+        affinity_heatmap = np.array(y_heatmap[:, :, 1])
+ 
+        char_mask = char_heatmap     > char_thresh
         aff_mask  = affinity_heatmap > affinity_thresh
         text_mask = np.logical_or(char_mask, aff_mask).astype(np.uint8)
         contours, _ = cv2.findContours(text_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         polygons    = [cv2.approxPolyDP(c, epsilon=2.0, closed=True) for c in contours]
-
-        plt.figure(figsize=(16, 9))
-        plt.imshow(x_sample, cmap="gray", vmin=0, vmax=1)
+ 
+        ax.imshow(x_sample, cmap="gray", vmin=0, vmax=1)
         for poly in polygons:
-            poly = poly.reshape(-1, 2)
-            plt.plot(np.append(poly[:, 0], poly[0, 0]), np.append(poly[:, 1], poly[0, 1]), 'r-', linewidth=2)
-        plt.title("Polygons from Heatmaps")
-        plt.axis("off")
-        plt.show()
+            pts = poly.reshape(-1, 2)
+            ax.plot(
+                np.append(pts[:, 0], pts[0, 0]),
+                np.append(pts[:, 1], pts[0, 1]),
+                'r-', linewidth=2,
+            )
+        ax.set_title(title)
+        ax.axis("off")
+ 
+    def plot_predictions(self, x_test, y_test=None, char_thresh=0.5, affinity_thresh=0.5, sample_check=False):
+        x_batch       = x_test[None, ...]
+        x_batch       = self.NHWC_check(x_batch)
+        y_pred        = self.predict(x_batch)
+        x_sample      = x_batch[0]
+        y_pred_sample = y_pred[0]
+ 
+        # print(f"Character heatmap     min={float(y_pred_sample[:,:,0].min()):.3f}  max={float(y_pred_sample[:,:,0].max()):.3f}")
+        # print(f"Affinity  heatmap     min={float(y_pred_sample[:,:,1].min()):.3f}  max={float(y_pred_sample[:,:,1].max()):.3f}")
+ 
+        if y_test is not None:
+            y_true_sample = y_test
+            fig, ax = plt.subplots(2, 3, figsize=(16, 16))
+
+            # True 
+            self.heatmap_decoder(x_sample, y_true_sample, ax[0, 0], char_thresh, affinity_thresh, "True box")
+ 
+            ax[0, 1].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
+            ax[0, 1].imshow(y_true_sample[:, :, 0], cmap="jet", alpha=0.6)
+            ax[0, 1].set_title("True Character Heatmap")
+            ax[0, 1].axis("off")
+ 
+            ax[0, 2].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
+            ax[0, 2].imshow(y_true_sample[:, :, 1], cmap="hot", alpha=0.6)
+            ax[0, 2].set_title("True Affinity Heatmap")
+            ax[0, 2].axis("off")
+ 
+            # Predictions
+            self.heatmap_decoder(x_sample, y_pred_sample, ax[1, 0], char_thresh, affinity_thresh, "Predicted box")
+ 
+            ax[1, 1].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
+            ax[1, 1].imshow(y_pred_sample[:, :, 0], cmap="jet", alpha=0.6)
+            ax[1, 1].set_title("Predicted Character Heatmap")
+            ax[1, 1].axis("off")
+ 
+            ax[1, 2].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
+            ax[1, 2].imshow(y_pred_sample[:, :, 1], cmap="hot", alpha=0.6)
+            ax[1, 2].set_title("Predicted Affinity Heatmap")
+            ax[1, 2].axis("off")
+ 
+        else:
+            # Predictions
+            fig, ax = plt.subplots(1, 3, figsize=(16, 9))
+ 
+            self.heatmap_decoder(x_sample, y_pred_sample, ax[0], char_thresh, affinity_thresh, "Predicted box")
+ 
+            ax[1].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
+            ax[1].imshow(y_pred_sample[:, :, 0], cmap="jet", alpha=0.6)
+            ax[1].set_title("Predicted Character Heatmap")
+            ax[1].axis("off")
+ 
+            ax[2].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
+            ax[2].imshow(y_pred_sample[:, :, 1], cmap="hot", alpha=0.6)
+            ax[2].set_title("Predicted Affinity Heatmap")
+            ax[2].axis("off")
+ 
+        plt.tight_layout()
+        if sample_check:
+            plt.show(block=False)
+            return np.array(x_sample), np.array(y_pred_sample)
+        else:
+            plt.show(block=True)
+            return 0, 0
 
     def benchmark(self, n_rounds=10, n_warmups=1):
         do_validation = self.do_validation
@@ -1451,6 +1463,5 @@ if __name__ == "__main__":
         buf_idx, features, targets = loader.acquire_buffer()
         for i in range(model.train_batch_size):
             model.plot_predictions(features[0, i], targets[0, i])
-            model.heatmap_decoder(features[0, i])
         loader.release_buffer(buf_idx)
         loader.stop_workers()

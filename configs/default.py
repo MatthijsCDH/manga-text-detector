@@ -2,7 +2,7 @@ import os
 from configs.configurations import (
     GlobalConfig, ModelConfig, LoaderConfig, AtlasConfig,
     LayoutConfig, FontConfig, BackgroundConfig,
-    RenderConfig, TextConfig, TrainConfig, SyntheticOrDataConfig,
+    RenderConfig, TextConfig, TrainConfig, RealDataConfig,
     AffinHeatmapConfig, CharHeatmapConfig, SentenceConfig, ImageAugConfig,
     SpeechBubbleConfig, LossConfig, InferenceConfig, BenchmarkParamsConfig, BenchmarkConfig
 )
@@ -56,10 +56,10 @@ fonts_dialogue = (
 )
 
 layout_dialogue = LayoutConfig(
-    length                  = (8, 45),
+    length                  = (1, 45),
     direction               = 0.15,
-    char_spacing_vertical   = (8, 10),
-    char_spacing_horizontal = (8, 10),
+    char_spacing_vertical   = (8, 12),
+    char_spacing_horizontal = (8, 12),
     jitters                 = (0, 2),
     rotation                = (0.0, 0.0),
 )
@@ -281,26 +281,33 @@ IMAGE_AUG = ImageAugConfig(
 
     prob_jpeg    = 0.5,
     jpeg_quality = (30, 85),
+    
+    prob_x_flip  = 0.1,
+    prob_y_flip  = 0.1,
+
+    prob_colour_inversion = 0.05,
+
+    crop_size = (0.7, 1.0)
 )
 
 # ── CharHeatmap ───────────────────────────────────────────────────────────────
 CHARHEATMAP = CharHeatmapConfig(
-    sigma     = (25, 40),
-    radius    = (25, 40),
+    sigma     = (30, 40),
+    radius    = (30, 40),
     intensity = (1.0, 1.0),
 )
 
 # ── AffinHeatmap ──────────────────────────────────────────────────────────────
 AFFINHEATMAP = AffinHeatmapConfig(
-    sigma     = (20, 30),
-    radius    = (20, 30),
+    sigma     = (20, 40),
+    radius    = (20, 40),
     intensity = (1.0, 1.0),
     n_steps   = 2,
 )
 
 # ── Mix ───────────────────────────────────────────────────────────────────────
-MIX = SyntheticOrDataConfig(
-    prob = 0.0,
+REAL_DATA= RealDataConfig(
+     prob_real_data = 0.1,
 )
 
 # ── Sentence ──────────────────────────────────────────────────────────────────
@@ -331,7 +338,7 @@ SPEECHBUBBLE = SpeechBubbleConfig(
     jagged_spike_ratio = (0.6, 0.88),
 
     wavy_amplitude = (2.0, 8.0),
-    wavy_frequency = (6, 16),
+    wavy_frequency = (6, 20),
 
     outline_width = (2, 6),
     fill_value    = (0.95, 1.0),
@@ -441,7 +448,7 @@ CFG_TRAIN = TrainConfig(
     speechbubble = SPEECHBUBBLE,
     background   = BACKGROUND,
     image        = IMAGE_AUG,
-    mix          = MIX,
+    real_data    = REAL_DATA,
     char         = CHARHEATMAP,
     affin        = AFFINHEATMAP,
 )
@@ -452,12 +459,13 @@ MODEL_INFERENCE = ModelConfig(
     epochs        = 100,
     learning_rate = 1e-3,
     mode          = "inference",
-    load_filepath = "checkpoints/weights_epoch_4500.pkl",
+    load_filepath = "checkpoints/weights_epoch_7000.pkl",
 )
 
 CFG_INFERENCE = InferenceConfig(
-    g     = GLOBAL,
-    model = MODEL_INFERENCE,
+    g               = GLOBAL,
+    model           = MODEL_INFERENCE,
+    sample_checking = True,
 )
 
 # ── Benchmark ─────────────────────────────────────────────────────────────────
@@ -501,7 +509,7 @@ CFG_BENCHMARK = BenchmarkConfig(
     speechbubble = SPEECHBUBBLE,
     background   = BACKGROUND,
     image        = IMAGE_AUG,
-    mix          = MIX,
+    real_data    = REAL_DATA,
     char         = CHARHEATMAP,
     affin        = AFFINHEATMAP,
 )

@@ -10,10 +10,12 @@ import time
 from functools import partial
 from dataclasses import replace
 from typing import NamedTuple
+from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image as PILImage, ImageDraw
+import cv2
 import jax
 import jax.numpy as jnp
 from jax import jit, random, lax
@@ -54,8 +56,9 @@ class RenderAug(NamedTuple):
     scaling:   jnp.ndarray
 
 class ImageAug(NamedTuple):
-    noise_sigma: jnp.ndarray
-    brightness:  jnp.ndarray
+    noise_sigma:      jnp.ndarray
+    brightness:       jnp.ndarray
+    colour_inversion: jnp.ndarray
 
 class CharHeatmapAug(NamedTuple):
     sigma:     jnp.ndarray
@@ -96,6 +99,7 @@ class SyntheticDataGenerator:
             affin_heatmap_config = config.affin
             speech_bubble_config = config.speechbubble
             image_aug_config     = config.image
+            real_data_config     = config.real_data
 
             # Global params
             self.H        = global_config.H
@@ -112,6 +116,7 @@ class SyntheticDataGenerator:
             self.affin_heatmap_config = affin_heatmap_config
             self.image_aug_config     = image_aug_config
             self.speech_bubble_config = speech_bubble_config
+            self.real_data_config     = real_data_config 
 
             self.probs     = np.array([tc.prob for tc in text_config], dtype=np.float32)
             self.probs     = self.probs / self.probs.sum()
@@ -164,6 +169,19 @@ class SyntheticDataGenerator:
             self.background_generator = None
             if self.background_config.background:
                 self.background_generator = BackgroundGenerator(config=config, N_images=self.N_images)
+
+            # Real data
+            self.real_data = []
+            st_dir = os.path.join(os.path.dirname(__file__), "..", "data", "assets", "Self_training")
+            if os.path.isdir(st_dir) and self.real_data_config.prob_real_data > 0.0:
+                for p in sorted(Path(st_dir).glob("*.npz")):
+                    data = np.load(str(p))
+                    self.real_data.append((
+                        data["image"].astype(np.float32),
+                        data["targets"].astype(np.float32),
+                    ))
+                print(f"Self-training pool: {len(self.real_data)} samples")
+
 
             # Pre-jit
             if workers_init:
@@ -272,13 +290,17 @@ class SyntheticDataGenerator:
         self.affin_radius_bounds    = np.array(self.affin_heatmap_config.radius,    dtype=np.float32)
         self.affin_intensity_bounds = np.array(self.affin_heatmap_config.intensity, dtype=np.float32)
 
-        self.prob_noise      = self.image_aug_config.prob_noise
-        self.prob_brightness = self.image_aug_config.prob_brightness
-        self.prob_jpeg       = self.image_aug_config.prob_jpeg
+        self.prob_noise            = self.image_aug_config.prob_noise
+        self.prob_brightness       = self.image_aug_config.prob_brightness
+        self.prob_jpeg             = self.image_aug_config.prob_jpeg
+        self.prob_colour_inversion = self.image_aug_config.prob_colour_inversion
+        self.prob_x_flip           = self.image_aug_config.prob_x_flip
+        self.prob_y_flip           = self.image_aug_config.prob_y_flip
 
         self.noise_sigma_bounds  = np.array(self.image_aug_config.noise_sigma,   dtype=np.float32)
         self.brightness_bounds   = np.array(self.image_aug_config.brightness,    dtype=np.float32)
         self.jpeg_quality_bounds = np.array(self.image_aug_config.jpeg_quality,  dtype=np.float32)
+        self.crop_scale_bounds   = np.array(self.image_aug_config.crop_size,     dtype=np.float32)
 
         self.max_scaling = int(np.max(self.scaling_bounds))
 
@@ -393,9 +415,14 @@ class SyntheticDataGenerator:
         affin_kernels           = SyntheticDataGenerator.make_kernels(affin_sigma, affin_radius, affin_intensity, max_kernel_radius_affin)
 
         # Image augmentation
+        # Jax part
         noise_sigma = np.where(rng.random(self.N_images) < self.prob_noise,      rng.uniform(self.noise_sigma_bounds[0], self.noise_sigma_bounds[1], size=self.N_images), -1.0).astype(np.float32)
-        brightness  = np.where(rng.random(self.N_images) < self.prob_brightness, rng.uniform(self.brightness_bounds[0],  self.brightness_bounds[1],  size=self.N_images), -1.0).astype(np.float32)
+        brightness  = np.where(rng.random(self.N_images) < self.prob_brightness, rng.uniform(self.brightness_bounds[0], self.brightness_bounds[1], size=self.N_images), -1.0).astype(np.float32)
+        colour_inversion = np.where(rng.random(self.N_images) < self.prob_colour_inversion, 1.0, -1.0).astype(np.float32)
+        
+        # Numpy part
         self.jpeg_quality = rng.uniform(self.jpeg_quality_bounds[0], self.jpeg_quality_bounds[1], size=self.N_images).astype(np.float32)
+        self.crop_scale   = rng.uniform(self.crop_scale_bounds[0], self.crop_scale_bounds[1])
 
         # Sentences
         sentences = np.full((N, self.max_char), -1, dtype=np.int32)
@@ -460,6 +487,7 @@ class SyntheticDataGenerator:
         image_aug = ImageAug(
             noise_sigma = jnp.asarray(noise_sigma),
             brightness  = jnp.asarray(brightness),
+            colour_inversion = jnp.asarray(colour_inversion), 
         )
 
         return sentence_batch, layout_aug, render_aug, charheatmap_aug, affinheatmap_aug, image_aug
@@ -1015,50 +1043,78 @@ class SyntheticDataGenerator:
 
     @staticmethod
     @jit
-    def image_augmentations(images, image_aug, jax_rng):
+    def image_augmentations_jax(images, image_aug, jax_rng):
         jax_rng, subkey = random.split(jax_rng)
         keys        = random.split(subkey, images.shape[0])
         noise_sigmas = image_aug.noise_sigma
         brightnesses = image_aug.brightness
+        colour_inversions = image_aug.colour_inversion
 
-        def augment_image(image, noise_sigma, brightness, key):
+        def augment_image(image, noise_sigma, brightness, colour_inversion, key):
             noise = jax.random.normal(key, image.shape)
             image = jnp.where(noise_sigma > 0, image + noise_sigma * noise, image)
             image = jnp.where(brightness > 0, image * brightness, image)
+            image = jnp.where(colour_inversion > 0, 1.0 - image, image)
             return jnp.clip(image, 0.0, 1.0)
 
-        images = jax.vmap(augment_image)(images, noise_sigmas, brightnesses, keys)
+        images = jax.vmap(augment_image)(images, noise_sigmas, brightnesses, colour_inversions, keys)
         return images, jax_rng
 
-    def image_augmentation_jpeg(self, images):
+    def image_augmentations_numpy(self, images, targets):
         jpeg_qualities = self.jpeg_quality
 
         for i in range(self.N_images):
-            if self.np_rng.random() >= self.prob_jpeg:
-                continue
-            q       = float(jpeg_qualities[i])
-            quality = int(np.clip(q, 1, 95))
-            arr     = images[i]
-            arr_uint8 = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
+            if self.np_rng.random() < self.prob_jpeg:
+                q       = float(jpeg_qualities[i])
+                quality = int(np.clip(q, 1, 95))
+                arr     = images[i]
+                arr_uint8 = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
 
-            if self.C == 1:
-                pil_img = PILImage.fromarray(arr_uint8[..., 0], mode="L")
-            else:
-                pil_img = PILImage.fromarray(arr_uint8, mode="RGB")
+                if self.C == 1:
+                    pil_img = PILImage.fromarray(arr_uint8[..., 0], mode="L")
+                else:
+                    pil_img = PILImage.fromarray(arr_uint8, mode="RGB")
 
-            buf = io.BytesIO()
-            pil_img.save(buf, format="JPEG", quality=quality)
-            buf.seek(0)
-            pil_img_decoded = PILImage.open(buf).convert("L" if self.C == 1 else "RGB")
-            decoded = np.array(pil_img_decoded, dtype=np.float32) / 255.0
+                buf = io.BytesIO()
+                pil_img.save(buf, format="JPEG", quality=quality)
+                buf.seek(0)
+                pil_img_decoded = PILImage.open(buf).convert("L" if self.C == 1 else "RGB")
+                decoded = np.array(pil_img_decoded, dtype=np.float32) / 255.0
 
-            if self.C == 1:
-                decoded = decoded[..., None]
+                if self.C == 1:
+                    decoded = decoded[..., None]
 
-            images[i] = decoded
+                images[i] = decoded
 
-        return images
+            if self.np_rng.random() < self.prob_x_flip:
+                images[i]  = images[i,  :, ::-1, :]
+                targets[i] = targets[i, :, ::-1, :]
 
+            if self.np_rng.random() < self.prob_y_flip:
+                images[i]  = images[i,  ::-1, :, :]
+                targets[i] = targets[i,  ::-1, :, :]
+        return images, targets
+
+    def crop_augmentation(self, image, targets):
+        crop_H = int(self.crop_scale * self.H)
+        crop_W = int(self.crop_scale * self.W)
+
+        y0 = self.np_rng.integers(0, self.H - crop_H + 1)
+        x0 = self.np_rng.integers(0, self.W - crop_W + 1)    
+        img_crop    = image[y0:y0+crop_H, x0:x0+crop_W, 0]
+        pil_img     = PILImage.fromarray((img_crop * 255).astype(np.uint8), mode="L")
+        pil_img     = pil_img.resize((self.W, self.H), PILImage.LANCZOS)
+        real_image  = np.array(pil_img, dtype=np.float32)[..., None] / 255.0
+
+        channels = []
+        for ch in range(targets.shape[-1]):
+            pil_ch   = PILImage.fromarray(targets[y0:y0+crop_H, x0:x0+crop_W, ch], mode="F")
+            pil_ch   = pil_ch.resize((self.W, self.H), PILImage.BILINEAR)
+            channels.append(np.array(pil_ch, dtype=np.float32))
+        real_targets = np.stack(channels, axis=-1)
+
+        return real_image, real_targets
+    
     def generate_batch(self, rng):
         self.seed   = rng
         self.np_rng = np.random.default_rng(self.seed)
@@ -1099,16 +1155,6 @@ class SyntheticDataGenerator:
             border_r=border_r,
         )
 
-        if self.image_aug:
-            images, jax_rng = SyntheticDataGenerator.image_augmentations(
-                images, image_aug, jax_rng
-            )
-
-        images = np.array(images, dtype=np.float32)
-
-        if self.image_aug:
-            images = self.image_augmentation_jpeg(images)
-
         char_heat = SyntheticDataGenerator.make_char_heatmaps_jitted(
             geos, sentence_batch, char_aug,
             self.N_images, self.H, self.W,
@@ -1125,32 +1171,72 @@ class SyntheticDataGenerator:
             axis=-1
         ).astype(np.float32)
 
+        images = np.array(images, dtype=np.float32)
+
+        if self.real_data_config.prob_real_data != 0.0:
+            for i in range(self.N_images):
+                if self.np_rng.random() >= self.real_data_config.prob_real_data:
+                    continue
+                idx = self.np_rng.integers(0, len(self.real_data))
+                real_image, real_targets = self.real_data[idx]
+                real_image, real_targets = self.crop_augmentation(real_image, real_targets)
+                images[i]   = real_image
+                targets[i]  = real_targets
+
+        if self.image_aug:
+            images, jax_rng = SyntheticDataGenerator.image_augmentations_jax(
+                images, image_aug, jax_rng
+            )
+
+        images = np.array(images, dtype=np.float32)
+
+        if self.image_aug:
+            images, targets = self.image_augmentations_numpy(images, targets)
+
         self.jax_rng = jax_rng
 
         return images, targets
 
-    def test_affinity_heatmaps(self, images, targets, idx=0):
+    @staticmethod
+    def heatmap_decoder(x_sample, y_heatmap, ax):
+        char_heatmap     = np.array(y_heatmap[:, :, 0])
+        affinity_heatmap = np.array(y_heatmap[:, :, 1])
+
+        text_mask = np.logical_or(char_heatmap , affinity_heatmap).astype(np.uint8)
+        contours, _ = cv2.findContours(text_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        polygons    = [cv2.approxPolyDP(c, epsilon=2.0, closed=True) for c in contours]
+ 
+        ax[0].imshow(x_sample, cmap="gray", vmin=0, vmax=1)
+        for poly in polygons:
+            pts = poly.reshape(-1, 2)
+            ax[0].plot(
+                np.append(pts[:, 0], pts[0, 0]),
+                np.append(pts[:, 1], pts[0, 1]),
+                'r-', linewidth=2,
+            )
+        ax[0].set_title("Image with bounding boxes")
+        ax[0].axis("off")
+
+    def plot_heatmaps(self, images, targets, idx=0):
         img       = np.array(images[idx])
         char_heat = np.array(targets[idx, :, :, 0])
         aff_heat  = np.array(targets[idx, :, :, 1])
         char_heat /= (char_heat.max() + 1e-8)
         aff_heat  /= (aff_heat.max()  + 1e-8)
 
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+        fig, ax = plt.subplots(1, 3, figsize=(14, 9))
 
-        axes[0].imshow(img, cmap="gray", vmin=0, vmax=1)
-        axes[0].set_title(f"Image {idx}")
-        axes[0].axis("off")
+        self.heatmap_decoder(img, targets[idx, :, :, :], ax)
 
-        axes[1].imshow(img, cmap="gray", vmin=0, vmax=1)
-        axes[1].imshow(char_heat, cmap="jet", alpha=0.5)
-        axes[1].set_title(f"Char Heatmap | Image {idx}")
-        axes[1].axis("off")
+        ax[1].imshow(img, cmap="gray", vmin=0, vmax=1)
+        ax[1].imshow(char_heat, cmap="jet", alpha=0.6)
+        ax[1].set_title("Character Heatmap")
+        ax[1].axis("off")
 
-        axes[2].imshow(img, cmap="gray", vmin=0, vmax=1)
-        axes[2].imshow(aff_heat, cmap="jet", alpha=0.5)
-        axes[2].set_title(f"Affinity Heatmap | Image {idx}")
-        axes[2].axis("off")
+        ax[2].imshow(img, cmap="gray", vmin=0, vmax=1)
+        ax[2].imshow(aff_heat, cmap="hot", alpha=0.6)
+        ax[2].set_title("Affinity Heatmap")
+        ax[2].axis("off")
 
         plt.tight_layout()
         plt.show()
@@ -1188,10 +1274,13 @@ class SyntheticDataGenerator:
             "speech_bubbles":      [],
             "to_jax_backgrounds":  [],
             "render_images":       [],
-            "image_aug":           [],
-            "jpeg":                [],
+            "image_aug_jax":       [],
+            "to_numpy":            [],
+            "real_data_mix":       [],
+            "image_aug_numpy":     [],
             "char_heat":           [],
             "aff_heat":            [],
+            "stack_targets":       [],
             "total":               [],
         }
         start_time = time.perf_counter()
@@ -1256,19 +1345,17 @@ class SyntheticDataGenerator:
             benchmark_times["render_images"].append(t8 - t7)
 
             if self.image_aug:
-                images, jax_rng = SyntheticDataGenerator.image_augmentations(
+                images, jax_rng = SyntheticDataGenerator.image_augmentations_jax(
                     images, image_aug, jax_rng
                 )
                 jax.block_until_ready(images)
                 jax.block_until_ready(jax_rng)
             t9 = time.perf_counter()
-            benchmark_times["image_aug"].append(t9 - t8)
+            benchmark_times["image_aug_jax"].append(t9 - t8)
 
-            images_np = np.array(images, dtype=np.float32)
-            if self.image_aug:
-                images_np = self.image_augmentation_jpeg(images_np)
+            images = np.array(images, dtype=np.float32)
             t10 = time.perf_counter()
-            benchmark_times["jpeg"].append(t10 - t9)
+            benchmark_times["to_numpy"].append(t10 - t9)
 
             char_heat = SyntheticDataGenerator.make_char_heatmaps_jitted(
                 geos, sentence_batch, char_aug,
@@ -1287,12 +1374,36 @@ class SyntheticDataGenerator:
             t12 = time.perf_counter()
             benchmark_times["aff_heat"].append(t12 - t11)
 
-            benchmark_times["total"].append(t12 - t0)
+            targets = np.stack(
+                [np.array(char_heat), np.array(aff_heat)],
+                axis=-1
+            ).astype(np.float32)
+            t13 = time.perf_counter()
+            benchmark_times["stack_targets"].append(t13 - t12)
+
+            if self.real_data_config.prob_real_data != 0.0:
+                for j in range(self.N_images):
+                    if self.np_rng.random() >= self.real_data_config.prob_real_data:
+                        continue
+                    idx = self.np_rng.integers(0, len(self.real_data))
+                    real_image, real_targets = self.real_data[idx]
+                    real_image, real_targets = self.crop_augmentation(real_image, real_targets)
+                    images[j]  = real_image
+                    targets[j] = real_targets
+            t14 = time.perf_counter()
+            benchmark_times["real_data_mix"].append(t14 - t13)
+
+            if self.image_aug:
+                images, targets = self.image_augmentations_numpy(images, targets)
+            t15 = time.perf_counter()
+            benchmark_times["image_aug_numpy"].append(t15 - t14)
+
+            benchmark_times["total"].append(t15 - t0)
             self.jax_rng = jax_rng
             round_times  = {k: benchmark_times[k][i] for k in benchmark_times if k != "total"}
             slowest_key  = max(round_times, key=round_times.get)
             slowest_val  = round_times[slowest_key]
-            print(f"  {i+1:>5}  {(t12-t0):>9.4f}  {slowest_key:>22}  {slowest_val:>9.4f}")
+            print(f"  {i+1:>5}  {(t15-t0):>9.4f}  {slowest_key:>22}  {slowest_val:>9.4f}")
 
         end_time = time.perf_counter()
         print(f"{'─'*60}")
@@ -1305,13 +1416,14 @@ class SyntheticDataGenerator:
             print(f"{k:>20}: {arr.mean():.4f}s ± {arr.std():.4f}s")
         print(f"{'─'*60}")
 
-
 if __name__ == "__main__":
     from configs.default import CFG_TRAIN
     config = CFG_TRAIN
     print("Start initialization")
-    gen = SyntheticDataGenerator(config, workers_init=False, N_images=10)
+    gen = SyntheticDataGenerator(config, workers_init=False, N_images = 4)
     print("Finished initialization")
     images, targets = gen.generate_batch(rng=0)
     for i in range(gen.N_images):
-        gen.test_affinity_heatmaps(images, targets, idx=i)
+        gen.plot_heatmaps(images, targets, idx=i)
+    
+    #gen.benchmark()

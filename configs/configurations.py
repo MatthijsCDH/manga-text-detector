@@ -77,10 +77,18 @@ class ImageAugConfig:
     prob_jpeg: float
     jpeg_quality: Tuple[int, int]
 
+    prob_x_flip: float
+    prob_y_flip: float
+
+    prob_colour_inversion: float
+
+    crop_size: Tuple[int, int]
+
+
 
 @dataclass(frozen=True)
-class SyntheticOrDataConfig:
-    prob: float
+class RealDataConfig:
+    prob_real_data: float
 
 
 @dataclass(frozen=True)
@@ -221,7 +229,7 @@ class TrainConfig:
     speechbubble: SpeechBubbleConfig
     background:  BackgroundConfig
     image:       ImageAugConfig
-    mix:         SyntheticOrDataConfig
+    real_data:   RealDataConfig
     affin:       AffinHeatmapConfig
     char:        CharHeatmapConfig
     loss:        LossConfig
@@ -231,8 +239,9 @@ class TrainConfig:
 
 @dataclass(frozen=True)
 class InferenceConfig:
-    g:     GlobalConfig
-    model: ModelConfig
+    g:               GlobalConfig
+    model:           ModelConfig
+    sample_checking: Optional[bool] = False
 
 
 @dataclass(frozen=True)
@@ -271,7 +280,7 @@ class BenchmarkConfig:
     speechbubble: SpeechBubbleConfig
     background:   BackgroundConfig
     image:        ImageAugConfig
-    mix:          SyntheticOrDataConfig
+    real_data:    RealDataConfig
     affin:        AffinHeatmapConfig
     char:         CharHeatmapConfig
     loss:         LossConfig
