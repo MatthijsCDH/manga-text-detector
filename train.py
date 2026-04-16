@@ -29,7 +29,6 @@ def main(config):
         buf_idx, features, targets = loader.acquire_buffer()
         for i in range(model.train_batch_size):
             model.plot_predictions(features[0, i], targets[0, i])
-            model.heatmap_decoder(features[0, i])
         loader.release_buffer(buf_idx)
         loader.stop_workers()
 

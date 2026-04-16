@@ -271,5 +271,5 @@ if __name__ == "__main__":
     atlas_config = ATLAS
     start_time   = time.time()
     atlas        = Atlas(atlas_config)
-    atlas.glyph_properties()
-    atlas.benchmark(atlas_config)
+    atlas.glyph_properties(ch_id = 0)
+    #atlas.benchmark(atlas_config)

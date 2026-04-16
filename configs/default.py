@@ -65,7 +65,7 @@ layout_dialogue = LayoutConfig(
 )
 
 render_dialogue = RenderConfig(
-    stroke    = (2, 4),
+    stroke    = (2, 6),
     blur      = (0.0, 0.4),
     intensity = (0.85, 1.0),
     dropout   = (0.0, 0.02),
@@ -73,7 +73,7 @@ render_dialogue = RenderConfig(
 
 DIALOGUE = TextConfig(
     name                = "dialogue",
-    prob                = 1.00,
+    prob                = 0.95,
     # (ellipse, jagged, rectangle, wavy, none)
     speech_bubble_probs = (0.55, 0.10, 0.15, 0.15, 0.05),
     sentence_scaling    = (0.3, 1.5),
@@ -104,7 +104,7 @@ layout_sfx = LayoutConfig(
 )
 
 render_sfx = RenderConfig(
-    stroke    = (3, 5),
+    stroke    = (3, 8),
     blur      = (0.0, 0.8),
     intensity = (0.90, 1.0),
     dropout   = (0.0, 0.0),
@@ -112,7 +112,7 @@ render_sfx = RenderConfig(
 
 SFX = TextConfig(
     name                = "sfx",
-    prob                = 0.00,
+    prob                = 0.05,
     # (ellipse, jagged, rectangle, wavy, none)
     speech_bubble_probs = (0.05, 0.15, 0.00, 0.05, 0.75),
     sentence_scaling    = (1.0, 2.0),
@@ -307,7 +307,7 @@ AFFINHEATMAP = AffinHeatmapConfig(
 
 # ── Mix ───────────────────────────────────────────────────────────────────────
 REAL_DATA= RealDataConfig(
-     prob_real_data = 0.1,
+     prob_real_data = 0.15,
 )
 
 # ── Sentence ──────────────────────────────────────────────────────────────────
@@ -412,7 +412,7 @@ architecture = [
 # ── Model ─────────────────────────────────────────────────────────────────────
 MODEL_TRAIN = ModelConfig(
     architecture  = architecture,
-    epochs        = 10000,
+    epochs        = 12000,
     learning_rate = 1e-4,
     mode          = "train",
     do_validation = True,
@@ -430,10 +430,10 @@ LOSSCONFIG = LossConfig(
     lambda_dice = 0.5,
 
     weight = 40,
-    alpha  = 0.8,
+    alpha  = 0.75,
     gamma  = 2,
 
-    use_auto_lambda = False,
+    use_auto_lambda = True,
 )
 
 # ── Train ─────────────────────────────────────────────────────────────────────
@@ -459,7 +459,7 @@ MODEL_INFERENCE = ModelConfig(
     epochs        = 100,
     learning_rate = 1e-3,
     mode          = "inference",
-    load_filepath = "checkpoints/weights_epoch_7000.pkl",
+    load_filepath = "checkpoints/weights_epoch_6000.pkl",
 )
 
 CFG_INFERENCE = InferenceConfig(

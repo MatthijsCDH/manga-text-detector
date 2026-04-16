@@ -180,7 +180,6 @@ class SyntheticDataGenerator:
                         data["image"].astype(np.float32),
                         data["targets"].astype(np.float32),
                     ))
-                print(f"Self-training pool: {len(self.real_data)} samples")
 
 
             # Pre-jit
@@ -526,7 +525,6 @@ class SyntheticDataGenerator:
         def compute_one(args):
             px, py, iw, ih, sc, mlw, mlh, s_h, s_v, mih, miw, is_v, jit_x, jit_y = args
 
-            # Horizontal scan: x advances right, y is closed-form
             def x_step(x_prev, j):
                 advance = (px[j-1] + iw[j-1] - px[j] + s_h) * sc
                 x_new   = x_prev + advance
@@ -539,7 +537,6 @@ class SyntheticDataGenerator:
             y_raw_h     = (mih + s_v) * sc * row.astype(jnp.float32)
             group_h     = row
 
-            # Vertical scan: y advances down, x is closed-form
             def y_step(y_prev, j):
                 advance = (py[j-1] + ih[j-1] - py[j] + s_v) * sc
                 y_new   = y_prev + advance
@@ -552,7 +549,6 @@ class SyntheticDataGenerator:
             x_raw_v     = (miw + s_h) * sc * col.astype(jnp.float32)
             group_v     = col
 
-            # Select — both scans done, select is near-free
             x_raw = jnp.where(is_v, x_raw_v, x_raw_h)
             y_raw = jnp.where(is_v, y_raw_v, y_raw_h)
             group = jnp.where(is_v, group_v, group_h)
@@ -583,16 +579,18 @@ class SyntheticDataGenerator:
             valid[:, :, None],
             jnp.stack([cx_raw, cy_raw], axis=-1),
             -1.0,
-        )                                                                   # (N, MC, 2)
+        ) 
 
         same_group = group_all[:, :-1] == group_all[:, 1:]
         both_valid = valid[:, :-1] & valid[:, 1:]
-        pair_mask  = same_group & both_valid                               # (N, MC-1)
+        is_space       = (sentences == 0)    
+        neither_is_space = (~is_space[:, :-1]) & (~is_space[:, 1:])
+        pair_mask  = same_group & both_valid & neither_is_space                   
 
         pairs_raw = jnp.stack(
             [cx_raw[:, :-1], cy_raw[:, :-1],
              cx_raw[:, 1:],  cy_raw[:, 1:]], axis=-1
-        )                                                                   # (N, MC-1, 4)
+        )
         pairs = jnp.where(pair_mask[:, :, None], pairs_raw, -1.0)
 
         rel_geo = RelativeGeo(
@@ -1173,7 +1171,7 @@ class SyntheticDataGenerator:
 
         images = np.array(images, dtype=np.float32)
 
-        if self.real_data_config.prob_real_data != 0.0:
+        if self.real_data_config.prob_real_data > 0.0:
             for i in range(self.N_images):
                 if self.np_rng.random() >= self.real_data_config.prob_real_data:
                     continue
@@ -1381,7 +1379,7 @@ class SyntheticDataGenerator:
             t13 = time.perf_counter()
             benchmark_times["stack_targets"].append(t13 - t12)
 
-            if self.real_data_config.prob_real_data != 0.0:
+            if self.real_data_config.prob_real_data > 0.0:
                 for j in range(self.N_images):
                     if self.np_rng.random() >= self.real_data_config.prob_real_data:
                         continue
