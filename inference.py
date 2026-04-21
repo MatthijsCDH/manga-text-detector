@@ -12,7 +12,7 @@ from pathlib import Path
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 IMAGE_DIR      = "data/assets/One-Punchman_pages"
-ANNOTATION_DIR = "data/assets/Annotations"
+ANNOTATION_DIR = "data/assets/Self_training"
 CHECKPOINT_DIR = "checkpoints"
 SELF_TRAINING_DIR = "data/assets/Self_training"
 
@@ -183,7 +183,7 @@ class Inference:
 if __name__ == "__main__":
     try:
         inf = Inference(CFG_INFERENCE)
-        #inf.compare_weights()
+        inf.compare_weights()
         inf.run()
     except KeyboardInterrupt:
         print("Interrupted.")

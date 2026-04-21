@@ -171,16 +171,25 @@ class SyntheticDataGenerator:
                 self.background_generator = BackgroundGenerator(config=config, N_images=self.N_images)
 
             # Real data
-            self.real_data = []
+            self.selftraining_data = []
             st_dir = os.path.join(os.path.dirname(__file__), "..", "data", "assets", "Self_training")
-            if os.path.isdir(st_dir) and self.real_data_config.prob_real_data > 0.0:
+            if os.path.isdir(st_dir) and self.real_data_config.prob_selftraining_data > 0.0:
                 for p in sorted(Path(st_dir).glob("*.npz")):
                     data = np.load(str(p))
-                    self.real_data.append((
+                    self.selftraining_data.append((
                         data["image"].astype(np.float32),
                         data["targets"].astype(np.float32),
                     ))
 
+            self.annotation_data = []
+            ann_dir = os.path.join(os.path.dirname(__file__), "..", "data", "assets", "Annotations")
+            if os.path.isdir(ann_dir) and self.real_data_config.prob_annotator_data > 0.0:
+                for p in sorted(Path(ann_dir).glob("*.npz")):
+                    data = np.load(str(p))
+                    self.annotation_data.append((
+                        data["image"].astype(np.float32),
+                        data["targets"].astype(np.float32),
+                    ))
 
             # Pre-jit
             if workers_init:
@@ -1171,15 +1180,33 @@ class SyntheticDataGenerator:
 
         images = np.array(images, dtype=np.float32)
 
-        if self.real_data_config.prob_real_data > 0.0:
+        prob_selftraining_data  = self.real_data_config.prob_selftraining_data
+        prob_annotator_data = self.real_data_config.prob_annotator_data
+        probs = np.array([prob_annotator_data, prob_selftraining_data], dtype=float)
+        probs = probs / probs.sum() 
+        self_training  = len(self.selftraining_data) > 0 and prob_selftraining_data  > 0.0
+        annotations = len(self.annotation_data) > 0 and prob_annotator_data > 0.0
+
+        if self_training or annotations:
             for i in range(self.N_images):
-                if self.np_rng.random() >= self.real_data_config.prob_real_data:
-                    continue
-                idx = self.np_rng.integers(0, len(self.real_data))
-                real_image, real_targets = self.real_data[idx]
-                real_image, real_targets = self.crop_augmentation(real_image, real_targets)
-                images[i]   = real_image
-                targets[i]  = real_targets
+                roll = self.np_rng.choice([0, 1], p=probs)
+                if roll == 0 and annotations:
+                    if self.np_rng.random() >= prob_annotator_data:
+                        continue
+                    idx = self.np_rng.integers(0, len(self.annotation_data))
+                    ann_image, ann_targets = self.annotation_data[idx]
+                    ann_image, ann_targets = self.crop_augmentation(ann_image, ann_targets)
+                    images[i]  = ann_image
+                    targets[i] = ann_targets
+
+                elif roll == 1 and self_training:
+                    if self.np_rng.random() >= prob_selftraining_data:
+                        continue
+                    idx = self.np_rng.integers(0, len(self.selftraining_data))
+                    real_image, real_targets = self.selftraining_data[idx]
+                    real_image, real_targets = self.crop_augmentation(real_image, real_targets)
+                    images[i]  = real_image
+                    targets[i] = real_targets
 
         if self.image_aug:
             images, jax_rng = SyntheticDataGenerator.image_augmentations_jax(

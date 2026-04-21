@@ -12,3 +12,5 @@ data/annotator.py
 TODO
 data/assets
 Paper/
+.claudeignore
+CLAUDE.md

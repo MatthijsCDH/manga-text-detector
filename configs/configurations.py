@@ -88,7 +88,8 @@ class ImageAugConfig:
 
 @dataclass(frozen=True)
 class RealDataConfig:
-    prob_real_data: float
+    prob_selftraining_data: float
+    prob_annotator_data:    float
 
 
 @dataclass(frozen=True)

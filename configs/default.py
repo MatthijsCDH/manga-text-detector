@@ -73,9 +73,9 @@ render_dialogue = RenderConfig(
 
 DIALOGUE = TextConfig(
     name                = "dialogue",
-    prob                = 0.95,
+    prob                = 0.8,
     # (ellipse, jagged, rectangle, wavy, none)
-    speech_bubble_probs = (0.55, 0.10, 0.15, 0.15, 0.05),
+    speech_bubble_probs = (0.50, 0.10, 0.15, 0.15, 0.1),
     sentence_scaling    = (0.3, 1.5),
     char_scaling        = (0.8, 1.1),
     fonts               = fonts_dialogue,
@@ -112,7 +112,7 @@ render_sfx = RenderConfig(
 
 SFX = TextConfig(
     name                = "sfx",
-    prob                = 0.05,
+    prob                = 0.2,
     # (ellipse, jagged, rectangle, wavy, none)
     speech_bubble_probs = (0.05, 0.15, 0.00, 0.05, 0.75),
     sentence_scaling    = (1.0, 2.0),
@@ -243,7 +243,7 @@ TITLE = TextConfig(
 # ── Background ────────────────────────────────────────────────────────────────
 BACKGROUND = BackgroundConfig(
     background = True,
-    prob_real  = 0.85,
+    prob_real  = 0.6,
 
     prob_solid        = 0.15,
     prob_screentone   = 0.40,
@@ -287,7 +287,7 @@ IMAGE_AUG = ImageAugConfig(
 
     prob_colour_inversion = 0.05,
 
-    crop_size = (0.7, 1.0)
+    crop_size = (0.75, 0.95)
 )
 
 # ── CharHeatmap ───────────────────────────────────────────────────────────────
@@ -307,7 +307,8 @@ AFFINHEATMAP = AffinHeatmapConfig(
 
 # ── Mix ───────────────────────────────────────────────────────────────────────
 REAL_DATA= RealDataConfig(
-     prob_real_data = 0.15,
+    prob_selftraining_data = 0.4,
+    prob_annotator_data = 0.4,
 )
 
 # ── Sentence ──────────────────────────────────────────────────────────────────
@@ -334,7 +335,7 @@ SPEECHBUBBLE = SpeechBubbleConfig(
 
     ellipse_margin     = (8.0, 20.0),
 
-    jagged_n_spikes    = (8, 30),
+    jagged_n_spikes    = (8, 24),
     jagged_spike_ratio = (0.6, 0.88),
 
     wavy_amplitude = (2.0, 8.0),
@@ -412,13 +413,14 @@ architecture = [
 # ── Model ─────────────────────────────────────────────────────────────────────
 MODEL_TRAIN = ModelConfig(
     architecture  = architecture,
-    epochs        = 12000,
+    epochs        = 25000,
     learning_rate = 1e-4,
     mode          = "train",
     do_validation = True,
     live_metrics  = True,
     n_warmups     = 2,
     save_filepath = "checkpoints/weights.pkl",
+    load_filepath = "checkpoints/weights.pkl",
 )
 
 LOSSCONFIG = LossConfig(
@@ -430,7 +432,7 @@ LOSSCONFIG = LossConfig(
     lambda_dice = 0.5,
 
     weight = 40,
-    alpha  = 0.75,
+    alpha  = 0.9,
     gamma  = 2,
 
     use_auto_lambda = True,
@@ -459,7 +461,7 @@ MODEL_INFERENCE = ModelConfig(
     epochs        = 100,
     learning_rate = 1e-3,
     mode          = "inference",
-    load_filepath = "checkpoints/weights_epoch_6000.pkl",
+    load_filepath = "checkpoints/weights_epoch_25000.pkl",
 )
 
 CFG_INFERENCE = InferenceConfig(
