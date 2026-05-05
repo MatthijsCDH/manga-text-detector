@@ -4,6 +4,8 @@ import time
 import warnings
 
 import numpy as np
+import matplotlib
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw, ImageFont
 from fontTools.ttLib import TTFont

@@ -358,69 +358,74 @@ LOADER = LoaderConfig(
 # ── Architecture ──────────────────────────────────────────────────────────────
 architecture = [
     # --- Encoder block 1 ---
+    {"type": "conv", "filters": 32, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 0
     {"type": "conv", "filters": 32, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 1
-    {"type": "conv", "filters": 32, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 2
-    {"type": "pool_max", "kernel_size": 2, "stride": 2},                                                   # 3
+    {"type": "pool_max", "kernel_size": 2, "stride": 2},                                                   # 2
 
     # --- Encoder block 2 ---
+    {"type": "conv", "filters": 64, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 3
     {"type": "conv", "filters": 64, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 4
-    {"type": "conv", "filters": 64, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 5
-    {"type": "pool_max", "kernel_size": 2, "stride": 2},                                                   # 6
+    {"type": "pool_max", "kernel_size": 2, "stride": 2},                                                   # 5
 
     # --- Encoder block 3 ---
+    {"type": "conv", "filters": 128, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 6
     {"type": "conv", "filters": 128, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 7
-    {"type": "conv", "filters": 128, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 8
-    {"type": "pool_max", "kernel_size": 2, "stride": 2},                                                   # 9
+    {"type": "pool_max", "kernel_size": 2, "stride": 2},                                                   # 8
 
-    # --- Bottleneck ---
-    {"type": "conv", "filters": 256, "kernel_size": 3, "stride": 1, "padding": 1,
-     "activation": "relu"},                                                                                # 10
-
+    # --- Bottleneck  ---
+    {"type": "conv", "filters": 256, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 9
     {"type": "conv", "filters": 256, "kernel_size": 3, "stride": 1, "padding": 2,
-     "rhs_dilation": (2, 2), "activation": "relu"},                                                        # 11
-
+     "rhs_dilation": (2, 2), "activation": "relu"},                                                        # 10
     {"type": "conv", "filters": 256, "kernel_size": 3, "stride": 1, "padding": 4,
-     "rhs_dilation": (4, 4), "activation": "relu"},                                                        # 12
+     "rhs_dilation": (4, 4), "activation": "relu"},                                                        # 11
 
-    {"type": "conv", "filters": 256, "kernel_size": 3, "stride": 1, "padding": 8,
-     "rhs_dilation": (8, 8), "activation": "relu"},                                                        # 13
+    {"type": "pool_max", "kernel_size": 2, "stride": 2},                                                   # 12
+
+    {"type": "flatten_spatial"},                                                                           # 13
+    {"type": "positional_embedding_2d", "height": 78, "width": 54},                                        # 14
+    {"type": "transformer_encoder", "heads": 8, "unit_size": 1024,
+     "p_dropout_atten": 0.1, "p_dropout_ffn": 0.1},                                                        # 15
+    {"type": "unflatten_spatial", "height": 78, "width": 54},                                              # 16
+
+    # --- Decoder block 4 ---
+    {"type": "bilinear_upsampling", "scaling": 2},                                                         # 17
+    {"type": "concatenation", "skip": 11},                                                                 # 18
+    {"type": "conv", "filters": 256, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 19
+    {"type": "conv", "filters": 256, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 20                                                     # 17
 
     # --- Decoder block 3 ---
-    {"type": "bilinear_upsampling", "scaling": 2},                                                         # 14
-    {"type": "concatenation", "skip": 8},                                                                  # 15
-
-    {"type": "conv", "filters": 128, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 16
-    {"type": "conv", "filters": 128, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 17
+    {"type": "bilinear_upsampling", "scaling": 2},                                                         # 21
+    {"type": "concatenation", "skip": 7},                                                                  # 22
+    {"type": "conv", "filters": 128, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 23
+    {"type": "conv", "filters": 128, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 24
 
     # --- Decoder block 2 ---
-    {"type": "bilinear_upsampling", "scaling": 2},                                                         # 18
-    {"type": "concatenation", "skip": 5},                                                                  # 19
-
-    {"type": "conv", "filters": 64, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 20
-    {"type": "conv", "filters": 64, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 21
+    {"type": "bilinear_upsampling", "scaling": 2},                                                         # 25
+    {"type": "concatenation", "skip": 4},                                                                  # 26
+    {"type": "conv", "filters": 64, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 27
+    {"type": "conv", "filters": 64, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 28
 
     # --- Decoder block 1 ---
-    {"type": "bilinear_upsampling", "scaling": 2},                                                         # 22
-    {"type": "concatenation", "skip": 2},                                                                  # 23
-
-    {"type": "conv", "filters": 32, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 24
-    {"type": "conv", "filters": 32, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 25
+    {"type": "bilinear_upsampling", "scaling": 2},                                                         # 29
+    {"type": "concatenation", "skip": 1},                                                                  # 30
+    {"type": "conv", "filters": 32, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 31
+    {"type": "conv", "filters": 32, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},    # 32
 
     # --- Output ---
-    {"type": "conv", "filters": 2, "kernel_size": 1, "stride": 1, "padding": 0, "activation": "sigmoid"},  # 26
+    {"type": "conv", "filters": 2, "kernel_size": 1, "stride": 1, "padding": 0, "activation": "sigmoid"},  # 33
 ]
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 MODEL_TRAIN = ModelConfig(
     architecture  = architecture,
-    epochs        = 25000,
+    epochs        = 20000,
     learning_rate = 1e-4,
     mode          = "train",
     do_validation = True,
     live_metrics  = True,
     n_warmups     = 2,
     save_filepath = "checkpoints/weights.pkl",
-    load_filepath = "checkpoints/weights.pkl",
+    #load_filepath = "checkpoints/weights.pkl",
 )
 
 LOSSCONFIG = LossConfig(
@@ -461,7 +466,7 @@ MODEL_INFERENCE = ModelConfig(
     epochs        = 100,
     learning_rate = 1e-3,
     mode          = "inference",
-    load_filepath = "checkpoints/weights_epoch_25000.pkl",
+    load_filepath = "checkpoints/weights_epoch_18500.pkl",
 )
 
 CFG_INFERENCE = InferenceConfig(

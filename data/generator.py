@@ -13,6 +13,9 @@ from typing import NamedTuple
 from pathlib import Path
 
 import numpy as np
+import matplotlib
+matplotlib.use("TkAgg")
+
 import matplotlib.pyplot as plt
 from PIL import Image as PILImage, ImageDraw
 import cv2
@@ -1265,7 +1268,7 @@ class SyntheticDataGenerator:
 
         plt.tight_layout()
         plt.show()
-
+        
     def benchmark(self, n_rounds=10, n_warmups=5, rng=0, device="cpu"):
         self.seed   = rng
         self.np_rng = np.random.default_rng(self.seed)
@@ -1299,25 +1302,31 @@ class SyntheticDataGenerator:
             "speech_bubbles":      [],
             "to_jax_backgrounds":  [],
             "render_images":       [],
-            "image_aug_jax":       [],
-            "to_numpy":            [],
-            "real_data_mix":       [],
-            "image_aug_numpy":     [],
             "char_heat":           [],
             "aff_heat":            [],
             "stack_targets":       [],
+            "to_numpy_images":     [],
+            "real_data_mix":       [],
+            "image_aug_jax":       [],
+            "to_numpy_post_jax":   [],
+            "image_aug_numpy":     [],
             "total":               [],
         }
-        start_time = time.perf_counter()
-        for i in range(n_rounds):
 
+        start_time = time.perf_counter()
+
+        for i in range(n_rounds):
             t0 = time.perf_counter()
+
+            # 1) sample_batch
             sentence_batch, layout_aug, render_aug, char_aug, affin_aug, image_aug = self.sample_batch()
             t1 = time.perf_counter()
             benchmark_times["sample_batch"].append(t1 - t0)
 
+            # 2) compute_relative_geometries
             rel_geo, boxes = SyntheticDataGenerator.compute_relative_geometries(
-                sentence_batch, layout_aug,
+                sentence_batch,
+                layout_aug,
                 self.ink_offset_arr,
                 self.max_char,
                 self.N_unique_sentences,
@@ -1327,12 +1336,14 @@ class SyntheticDataGenerator:
             t2 = time.perf_counter()
             benchmark_times["rel_geo"].append(t2 - t1)
 
+            # 3) compute_start_coords
             start_coords, bubble_params, sentence_batch = self.compute_start_coords(
                 boxes, sentence_batch
             )
             t3 = time.perf_counter()
             benchmark_times["start_coords"].append(t3 - t2)
 
+            # 4) apply_coords
             geos = SyntheticDataGenerator.apply_coords(
                 rel_geo, jnp.array(start_coords)
             )
@@ -1340,10 +1351,12 @@ class SyntheticDataGenerator:
             t4 = time.perf_counter()
             benchmark_times["apply_coords"].append(t4 - t3)
 
+            # 5) make_backgrounds
             backgrounds = self.make_backgrounds()
             t5 = time.perf_counter()
             benchmark_times["backgrounds"].append(t5 - t4)
 
+            # 6) make_speech_bubbles
             if self.speech_bubble:
                 backgrounds = self.make_speech_bubbles(
                     bubble_params, sentence_batch, self.np_rng, backgrounds
@@ -1351,15 +1364,22 @@ class SyntheticDataGenerator:
             t6 = time.perf_counter()
             benchmark_times["speech_bubbles"].append(t6 - t5)
 
+            # 7) backgrounds -> jax array
             backgrounds = jnp.array(backgrounds)
             t7 = time.perf_counter()
             benchmark_times["to_jax_backgrounds"].append(t7 - t6)
 
             border_r = int(render_aug.stroke.max())
 
+            # 8) make_images_jitted
             images = SyntheticDataGenerator.make_images_jitted(
-                geos, sentence_batch, render_aug, backgrounds,
-                self.N_images, self.H, self.W,
+                geos,
+                sentence_batch,
+                render_aug,
+                backgrounds,
+                self.N_images,
+                self.H,
+                self.W,
                 self.glyphs,
                 self.atlas.glyph_height,
                 self.atlas.glyph_width,
@@ -1369,66 +1389,109 @@ class SyntheticDataGenerator:
             t8 = time.perf_counter()
             benchmark_times["render_images"].append(t8 - t7)
 
+            # 9) make_char_heatmaps_jitted
+            char_heat = SyntheticDataGenerator.make_char_heatmaps_jitted(
+                geos,
+                sentence_batch,
+                char_aug,
+                self.N_images,
+                self.H,
+                self.W,
+            )
+            jax.block_until_ready(char_heat)
+            t9 = time.perf_counter()
+            benchmark_times["char_heat"].append(t9 - t8)
+
+            # 10) make_affinity_heatmaps_jitted
+            aff_heat = SyntheticDataGenerator.make_affinity_heatmaps_jitted(
+                geos,
+                sentence_batch,
+                affin_aug,
+                self.N_images,
+                self.H,
+                self.W,
+                self.n_steps,
+            )
+            jax.block_until_ready(aff_heat)
+            t10 = time.perf_counter()
+            benchmark_times["aff_heat"].append(t10 - t9)
+
+            # 11) stack targets
+            targets = np.stack(
+                [np.array(char_heat), np.array(aff_heat)],
+                axis=-1
+            ).astype(np.float32)
+            t11 = time.perf_counter()
+            benchmark_times["stack_targets"].append(t11 - t10)
+
+            # 12) images -> numpy
+            images = np.array(images, dtype=np.float32)
+            t12 = time.perf_counter()
+            benchmark_times["to_numpy_images"].append(t12 - t11)
+
+            # 13) real/selftraining/annotation mix
+            prob_selftraining_data = self.real_data_config.prob_selftraining_data
+            prob_annotator_data    = self.real_data_config.prob_annotator_data
+            probs = np.array([prob_annotator_data, prob_selftraining_data], dtype=float)
+
+            self_training = len(self.selftraining_data) > 0 and prob_selftraining_data > 0.0
+            annotations   = len(self.annotation_data) > 0 and prob_annotator_data > 0.0
+
+            if self_training or annotations:
+                probs = probs / probs.sum()
+                for j in range(self.N_images):
+                    roll = self.np_rng.choice([0, 1], p=probs)
+
+                    if roll == 0 and annotations:
+                        if self.np_rng.random() >= prob_annotator_data:
+                            continue
+                        idx = self.np_rng.integers(0, len(self.annotation_data))
+                        ann_image, ann_targets = self.annotation_data[idx]
+                        ann_image, ann_targets = self.crop_augmentation(ann_image, ann_targets)
+                        images[j]  = ann_image
+                        targets[j] = ann_targets
+
+                    elif roll == 1 and self_training:
+                        if self.np_rng.random() >= prob_selftraining_data:
+                            continue
+                        idx = self.np_rng.integers(0, len(self.selftraining_data))
+                        real_image, real_targets = self.selftraining_data[idx]
+                        real_image, real_targets = self.crop_augmentation(real_image, real_targets)
+                        images[j]  = real_image
+                        targets[j] = real_targets
+
+            t13 = time.perf_counter()
+            benchmark_times["real_data_mix"].append(t13 - t12)
+
+            # 14) image_augmentations_jax
             if self.image_aug:
                 images, jax_rng = SyntheticDataGenerator.image_augmentations_jax(
                     images, image_aug, jax_rng
                 )
                 jax.block_until_ready(images)
                 jax.block_until_ready(jax_rng)
-            t9 = time.perf_counter()
-            benchmark_times["image_aug_jax"].append(t9 - t8)
-
-            images = np.array(images, dtype=np.float32)
-            t10 = time.perf_counter()
-            benchmark_times["to_numpy"].append(t10 - t9)
-
-            char_heat = SyntheticDataGenerator.make_char_heatmaps_jitted(
-                geos, sentence_batch, char_aug,
-                self.N_images, self.H, self.W,
-            )
-            jax.block_until_ready(char_heat)
-            t11 = time.perf_counter()
-            benchmark_times["char_heat"].append(t11 - t10)
-
-            aff_heat = SyntheticDataGenerator.make_affinity_heatmaps_jitted(
-                geos, sentence_batch, affin_aug,
-                self.N_images, self.H, self.W,
-                self.n_steps,
-            )
-            jax.block_until_ready(aff_heat)
-            t12 = time.perf_counter()
-            benchmark_times["aff_heat"].append(t12 - t11)
-
-            targets = np.stack(
-                [np.array(char_heat), np.array(aff_heat)],
-                axis=-1
-            ).astype(np.float32)
-            t13 = time.perf_counter()
-            benchmark_times["stack_targets"].append(t13 - t12)
-
-            if self.real_data_config.prob_real_data > 0.0:
-                for j in range(self.N_images):
-                    if self.np_rng.random() >= self.real_data_config.prob_real_data:
-                        continue
-                    idx = self.np_rng.integers(0, len(self.real_data))
-                    real_image, real_targets = self.real_data[idx]
-                    real_image, real_targets = self.crop_augmentation(real_image, real_targets)
-                    images[j]  = real_image
-                    targets[j] = real_targets
             t14 = time.perf_counter()
-            benchmark_times["real_data_mix"].append(t14 - t13)
+            benchmark_times["image_aug_jax"].append(t14 - t13)
 
+            # 15) images -> numpy again
+            images = np.array(images, dtype=np.float32)
+            t15 = time.perf_counter()
+            benchmark_times["to_numpy_post_jax"].append(t15 - t14)
+
+            # 16) image_augmentations_numpy
             if self.image_aug:
                 images, targets = self.image_augmentations_numpy(images, targets)
-            t15 = time.perf_counter()
-            benchmark_times["image_aug_numpy"].append(t15 - t14)
+            t16 = time.perf_counter()
+            benchmark_times["image_aug_numpy"].append(t16 - t15)
 
-            benchmark_times["total"].append(t15 - t0)
+            benchmark_times["total"].append(t16 - t0)
             self.jax_rng = jax_rng
-            round_times  = {k: benchmark_times[k][i] for k in benchmark_times if k != "total"}
-            slowest_key  = max(round_times, key=round_times.get)
-            slowest_val  = round_times[slowest_key]
-            print(f"  {i+1:>5}  {(t15-t0):>9.4f}  {slowest_key:>22}  {slowest_val:>9.4f}")
+
+            round_times = {k: benchmark_times[k][i] for k in benchmark_times if k != "total"}
+            slowest_key = max(round_times, key=round_times.get)
+            slowest_val = round_times[slowest_key]
+
+            print(f"  {i+1:>5}  {(t16-t0):>9.4f}  {slowest_key:>22}  {slowest_val:>9.4f}")
 
         end_time = time.perf_counter()
         print(f"{'─'*60}")

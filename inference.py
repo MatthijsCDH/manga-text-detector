@@ -3,6 +3,8 @@ import glob
 import sys
 import gc
 import numpy as np
+import matplotlib
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from PIL import Image
 
@@ -156,7 +158,7 @@ class Inference:
             if save_path.exists():
                 continue
             img = self.load_image(os.path.join(IMAGE_DIR, fname))
-            x_sample, y_pred_sample = self.model.plot_predictions(img, sample_check = self.sample_check)
+            x_sample, y_pred_sample = self.model.plot_predictions(img, sample_check = self.sample_check, title = stem)
             if self.sample_check:
                 while True:
                     try:
@@ -183,7 +185,7 @@ class Inference:
 if __name__ == "__main__":
     try:
         inf = Inference(CFG_INFERENCE)
-        inf.compare_weights()
+        #inf.compare_weights()
         inf.run()
     except KeyboardInterrupt:
         print("Interrupted.")

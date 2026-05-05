@@ -1,6 +1,7 @@
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=4"
+os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=2"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.95"
 
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", ".cache", "network")
 os.makedirs(_CACHE_DIR, exist_ok=True)
@@ -24,6 +25,8 @@ import numpy as np
 import optax
 import flax
 import cv2
+import matplotlib
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 
 from model.loader import MultiProcessLoader, data_generator, data_generator_init
@@ -42,8 +45,15 @@ ADD           = 8
 GPOOL_MAX     = 9
 GPOOL_SUM     = 10
 NNUPSAMPLING  = 11
-CONCATENATION = 12
-BUPSAMPLING   = 13
+CONCATENATION           = 12
+BUPSAMPLING             = 13
+BIAS                    = 14
+FLATTEN_SPATIAL         = 15
+UNFLATTEN_SPATIAL       = 16
+POSITIONALEMBEDDING2D   = 17
+TRANSFORMERENCODER      = 18
+BRANCH                  = 19
+CROSS_ATTENTION         = 20
 
 # ── Params and State ──────────────────────────────────────────────────────────
 class FCParams(NamedTuple):
@@ -57,6 +67,34 @@ class ConvParams(NamedTuple):
 class NormParams(NamedTuple):
     gamma: jnp.ndarray
     beta:  jnp.ndarray
+
+class TransformerParams(NamedTuple):
+    Wq: jnp.ndarray
+    Wk: jnp.ndarray
+    Wv: jnp.ndarray
+    Wo: jnp.ndarray
+
+class BiasParams(NamedTuple):
+    b: jnp.ndarray 
+
+class PositionalEmbedding2DParams(NamedTuple):
+    E_row: jnp.ndarray 
+    E_col: jnp.ndarray 
+
+class TransformerEncoderParams(NamedTuple):
+    attn:  TransformerParams
+    bo:    BiasParams
+    norm1: NormParams
+    fc1:  FCParams
+    fc2:  FCParams
+    norm2: NormParams
+
+class CrossAttentionParams(NamedTuple):
+    Wq: jnp.ndarray
+    Wk: jnp.ndarray
+    Wv: jnp.ndarray
+    Wo: jnp.ndarray
+
 
 class TrainState(NamedTuple):
     params:    any
@@ -119,6 +157,50 @@ class ConcatenatingConfig(NamedTuple):
 class BilinearUpsamplingConfig(NamedTuple):
     scaling: int
     type:    int = BUPSAMPLING
+
+class TransformerConfig(NamedTuple):
+    heads:  int
+    d_head: int
+    scale:  float
+    p_dropout: float
+    type:   int = TRANSFORMER
+
+class BiasConfig(NamedTuple):
+    type:   int = BIAS
+
+class FlattenSpatialConfig(NamedTuple):
+    type:   int = FLATTEN_SPATIAL
+
+class UnFlattenSpatialConfig(NamedTuple):
+    height: int
+    width:  int
+    type:   int = UNFLATTEN_SPATIAL
+
+class PositionalEmbedding2DConfig(NamedTuple):
+    height: int
+    width:  int
+    type:   int = POSITIONALEMBEDDING2D
+
+class TransformerEncoderConfig(NamedTuple):
+    heads:  int
+    d_head: int
+    d_ff:   int
+    scale:  float
+    p_dropout_atten: float
+    p_dropout_fc: float
+    type:   int = TRANSFORMERENCODER
+
+class BranchConfig(NamedTuple):
+    skip: int
+    type: int = BRANCH
+
+class CrossAttentionConfig(NamedTuple):
+    heads:           int
+    d_head:          int
+    scale:           float
+    skip:            int
+    p_dropout:       float
+    type:            int = CROSS_ATTENTION
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 class Metrics(NamedTuple):
@@ -486,23 +568,28 @@ class NeuralNetwork:
 
     def transformer_layer_initialization(self, rng, layer, previous_height, previous_width, previous_channel_size):
         heads   = layer['heads']
+        p_dropout = layer.get("p_dropout", 0.0)
         d_model = previous_channel_size
-        d_ff    = layer.get("d_ff", 4 * d_model)
-        rng, k1, k2, k3, k4, k5, k6 = random.split(rng, 7)
-        if d_model % heads != 0:
-            raise ValueError(f"d_model ({d_model}) must be divisible by number of heads ({heads})")
-        Wq = random.normal(k1, (d_model, d_model)) * jnp.sqrt(1.0 / previous_channel_size)
-        Wk = random.normal(k2, (d_model, d_model)) * jnp.sqrt(1.0 / previous_channel_size)
-        Wv = random.normal(k3, (d_model, d_model)) * jnp.sqrt(1.0 / previous_channel_size)
-        Wo = random.normal(k4, (d_model, d_model)) * jnp.sqrt(1.0 / previous_channel_size)
-        W1 = random.normal(k5, (d_model, d_ff))    * jnp.sqrt(1.0 / previous_channel_size)
-        b1 = jnp.zeros((d_ff,))
-        W2 = random.normal(k6, (d_ff, d_model))    * jnp.sqrt(1.0 / previous_channel_size)
-        b2 = jnp.zeros((d_model,))
-        self.params.append({"Wq": Wq, "Wk": Wk, "Wv": Wv, "Wo": Wo, "W1": W1, "b1": b1, "W2": W2, "b2": b2})
-        previous_channel_size = d_model
-        return rng, previous_height, previous_width, previous_channel_size
+        d_head  = d_model // heads
 
+        if d_model % heads != 0:
+            raise ValueError(f"d_model ({d_model}) must be divisible by heads ({heads})")
+
+        rng, k1, k2, k3, k4 = random.split(rng, 5)
+
+        qk_scale = jnp.sqrt(1.0 / d_head)
+        Wq = random.normal(k1, (d_model, d_model)) * qk_scale
+        Wk = random.normal(k2, (d_model, d_model)) * qk_scale
+
+        vo_scale = jnp.sqrt(1.0 / d_model)
+        Wv = random.normal(k3, (d_model, d_model)) * vo_scale
+        Wo = random.normal(k4, (d_model, d_model)) * vo_scale
+
+        self.params.append(TransformerParams(Wq=Wq, Wk=Wk, Wv=Wv, Wo=Wo))
+        self.layer_configs.append(TransformerConfig(heads=heads, d_head= d_head, scale=float(jnp.sqrt(d_head)), p_dropout=p_dropout))
+
+        return rng, previous_height, previous_width, previous_channel_size
+    
     def dropout_layer_initialization(self, rng, layer, previous_height, previous_width, previous_channel_size):
         p = layer.get("p", 0.5)
         self.params.append(None)
@@ -552,6 +639,135 @@ class NeuralNetwork:
         previous_width  = previous_width  * scaling
         return rng, previous_height, previous_width, previous_channel_size
 
+    def bias_layer_initialization(self, rng, layer, previous_height, previous_width, previous_channel_size):
+        b = jnp.zeros((previous_channel_size,))
+        self.params.append(BiasParams(b=b))
+        self.layer_configs.append(BiasConfig())
+        return rng, previous_height, previous_width, previous_channel_size
+
+    def flatten_spatial_layer_initialization(self, rng, layer, previous_height, previous_width, previous_channel_size):
+        self.params.append(None)
+        self.layer_configs.append(FlattenSpatialConfig())
+        previous_height = previous_height * previous_width
+        previous_width = 1
+        return rng, previous_height, previous_width, previous_channel_size
+
+    def unflatten_spatial_layer_initialization(self, rng, layer, previous_height, previous_width, previous_channel_size):
+        target_height = layer["height"]
+        target_width  = layer["width"]
+        self.params.append(None)
+        self.layer_configs.append(UnFlattenSpatialConfig(height=target_height, width=target_width))
+        previous_height = target_height
+        previous_width  = target_width
+        return rng, previous_height, previous_width, previous_channel_size
+
+    def positional_embedding_2d_layer_initialization(self, rng, layer, previous_height, previous_width, previous_channel_size):
+        height  = layer["height"]
+        width   = layer["width"]
+        d_model = previous_channel_size
+
+        if d_model % 2 != 0:
+            raise ValueError(f"d_model ({d_model}) must be even for factorised 2D positional embedding")
+
+        rng, k1, k2 = random.split(rng, 3)
+        scale = jnp.sqrt(1.0 / d_model)
+
+        E_row = random.normal(k1, (height, d_model // 2)) * scale
+        E_col = random.normal(k2, (width,  d_model // 2)) * scale
+
+        self.params.append(PositionalEmbedding2DParams(E_row=E_row, E_col=E_col))
+        self.layer_configs.append(PositionalEmbedding2DConfig(height=height, width=width))
+
+        return rng, previous_height, previous_width, previous_channel_size
+
+    def transformer_encoder_layer_initialization(self, rng, layer, previous_height, previous_width, previous_channel_size):
+        heads            = layer['heads']
+        p_dropout_atten  = layer.get('p_dropout_atten', 0.0)
+        p_dropout_fc     = layer.get('p_dropout_ffn', 0.0)
+        d_model          = previous_channel_size
+        d_head           = d_model // heads
+        unit_size            = layer.get('unit_size', 4 * d_model)
+
+        if d_model % heads != 0:
+            raise ValueError(f"d_model ({d_model}) must be divisible by heads ({heads})")
+
+        rng, k1, k2, k3, k4, k5, k6 = random.split(rng, 7)
+
+        # ── Attention layer ─────────────────────────────────────────────────
+        qk_scale = jnp.sqrt(1.0 / d_head)
+        Wq = random.normal(k1, (d_model, d_model)) * qk_scale
+        Wk = random.normal(k2, (d_model, d_model)) * qk_scale
+
+        vo_scale = jnp.sqrt(1.0 / d_model)
+        Wv = random.normal(k3, (d_model, d_model)) * vo_scale
+        Wo = random.normal(k4, (d_model, d_model)) * vo_scale
+        bo = jnp.zeros((d_model,))
+
+        # ── FC layer ───────────────────────────────────────────────────────
+        W1 = random.normal(k5, (unit_size, d_model)) * jnp.sqrt(2.0 / (d_model + unit_size))
+        b1 = jnp.zeros((unit_size,))
+
+        W2 = random.normal(k6, (d_model, unit_size)) * jnp.sqrt(2.0 / (d_model + unit_size))
+        b2 = jnp.zeros((d_model,))
+
+        # ── Layer norm ─────────────────────────────────
+        gamma1 = jnp.ones( (d_model,))
+        beta1  = jnp.zeros((d_model,))
+        gamma2 = jnp.ones( (d_model,))
+        beta2  = jnp.zeros((d_model,))
+
+        self.params.append(TransformerEncoderParams(
+            attn  = TransformerParams(Wq=Wq, Wk=Wk, Wv=Wv, Wo=Wo),
+            bo    = bo,
+            norm1 = NormParams(gamma=gamma1, beta=beta1),
+            fc1  = FCParams(W=W1, b=b1),
+            fc2  = FCParams(W=W2, b=b2),
+            norm2 = NormParams(gamma=gamma2, beta=beta2),
+        ))
+        self.layer_configs.append(TransformerEncoderConfig(
+            heads=heads,
+            d_head=d_head,
+            d_ff=unit_size,
+            scale=float(jnp.sqrt(d_head)),
+            p_dropout_atten=p_dropout_atten,
+            p_dropout_fc=p_dropout_fc,
+        ))
+
+        return rng, previous_height, previous_width, previous_channel_size
+
+    def branch_initialization(self, rng, layer, previous_height, previous_width, previous_channel_size):
+        skip = layer["skip"]
+        self.layer_configs.append(BranchConfig(skip=skip))
+        self.params.append(None)
+        previous_channel_size = self.layer_output_channels[skip]
+        return rng, previous_height, previous_width, previous_channel_size
+
+    def cross_attention_layer_initialization(self, rng, layer, previous_height, previous_width, previous_channel_size):
+        heads      = layer["heads"]
+        p_dropout  = layer.get("p_dropout", 0.0)
+        d_model    = previous_channel_size
+        d_head     = d_model // heads
+
+        if d_model % heads != 0:
+            raise ValueError(f"d_model ({d_model}) must be divisible by heads ({heads})")
+
+        skip = layer["skip"]
+
+        rng, k1, k2, k3, k4 = random.split(rng, 5)
+
+        qk_scale = jnp.sqrt(1.0 / d_head)
+        Wq = random.normal(k1, (d_model, d_model)) * qk_scale
+        Wk = random.normal(k2, (d_model, d_model)) * qk_scale
+
+        vo_scale = jnp.sqrt(1.0 / d_model)
+        Wv = random.normal(k3, (d_model, d_model)) * vo_scale
+        Wo = random.normal(k4, (d_model, d_model)) * vo_scale
+
+        self.params.append(CrossAttentionParams(Wq=Wq, Wk=Wk, Wv=Wv, Wo=Wo))
+        self.layer_configs.append(CrossAttentionConfig(heads=heads, d_head=d_head, scale=float(jnp.sqrt(d_head)), skip=skip, p_dropout=p_dropout,))
+
+        return rng, previous_height, previous_width, previous_channel_size   
+
     def initiate_metrics(self):
         self.history = {"train": [], "val": [], "lambdas": []}
 
@@ -571,6 +787,13 @@ class NeuralNetwork:
             "nearest_neighbour_upsampling":   self.nearest_neighbour_upsampling_layer_initialization,
             "concatenation":                  self.concatenation_layer_initialization,
             "bilinear_upsampling":            self.bilinear_upsampling_layer_initialization,
+            "bias":                           self.bias_layer_initialization,
+            "flatten_spatial":                self.flatten_spatial_layer_initialization,
+            "unflatten_spatial":              self.unflatten_spatial_layer_initialization,
+            "positional_embedding_2d":        self.positional_embedding_2d_layer_initialization,
+            "transformer_encoder":            self.transformer_encoder_layer_initialization,
+            "branch":                         self.branch_initialization,
+            "cross_attention":                self.cross_attention_layer_initialization,  
         }
 
     def initialize_params(self):
@@ -597,6 +820,7 @@ class NeuralNetwork:
         "sigmoid":    jax.nn.sigmoid,
         "linear":     lambda x: x,
         "softmax":    lambda x: jax.nn.softmax(x, axis=-1),
+        "gelu":       jax.nn.gelu,
     }
 
     @staticmethod
@@ -650,8 +874,32 @@ class NeuralNetwork:
         return lax.reduce_window(X, 0.0, lax.add, config.window, config.strides, padding="VALID")
 
     @staticmethod
-    def transformer_layer_forward(layer_params, X, config):
-        pass
+    def transformer_layer_forward(layer_params, X, config, rng, training):
+        X = X[:, :, 0, :]
+
+        B, T, d_model = X.shape
+
+        Q = X @ layer_params.Wq.T
+        K = X @ layer_params.Wk.T
+        V = X @ layer_params.Wv.T
+
+        Q = Q.reshape(B, T, config.heads, config.d_head).transpose(0, 2, 1, 3)
+        K = K.reshape(B, T, config.heads, config.d_head).transpose(0, 2, 1, 3)
+        V = V.reshape(B, T, config.heads, config.d_head).transpose(0, 2, 1, 3)
+
+        scores  = (Q @ K.transpose(0, 1, 3, 2)) / config.scale
+        weights = jax.nn.softmax(scores, axis=-1)
+
+        weights = NeuralNetwork.dropout_layer_forward(
+            None, weights, DropoutConfig(p=config.p_dropout), rng, training
+        )
+
+        out = weights @ V
+
+        out = out.transpose(0, 2, 1, 3).reshape(B, T, d_model)
+        out = out @ layer_params.Wo.T
+
+        return out[:, :, None, :]
 
     @staticmethod
     def dropout_layer_forward(layer_params, X, config, rng, training=True):
@@ -692,6 +940,116 @@ class NeuralNetwork:
         B, H, W, C = X.shape
         new_shape  = (B, H * scaling, W * scaling, C)
         return jax.image.resize(X, new_shape, method='linear')
+    
+    @staticmethod
+    def bias_layer_forward(layer_params, X, config):
+        return X + layer_params.b.reshape((1, 1, 1, -1))
+
+    @staticmethod
+    def flatten_spatial_layer_forward(layer_params, X, config):
+        B, H, W, C = X.shape
+        return X.reshape(B, H*W,1,C)
+    
+    @staticmethod
+    def unflatten_spatial_layer_forward(layer_params, X, config):
+        B, T, _, C = X.shape
+        return X.reshape(B, config.height, config.width, C)
+
+    @staticmethod
+    def positional_embedding_2d_layer_forward(layer_params, X, config):
+        H = config.height
+        W = config.width
+
+        row_idx = jnp.repeat(jnp.arange(H), W)
+        col_idx = jnp.tile(jnp.arange(W), H)
+
+        row_emb = layer_params.E_row[row_idx]
+        col_emb = layer_params.E_col[col_idx]
+
+        pos_emb = jnp.concatenate([row_emb, col_emb], axis=-1)
+
+        return X + pos_emb[None, :, None, :]
+
+    @staticmethod
+    def transformer_encoder_layer_forward(layer_params, X, config, rng, training):
+        X = X[:, :, 0, :]
+        B, T, d_model = X.shape
+        residual = X
+
+        # Normalization layer
+        X_norm   = NeuralNetwork.layer_normalization_layer_forward(
+            layer_params.norm1, X, LayerNormConfig()
+        )
+        attn_config = TransformerConfig(
+            heads=config.heads, d_head=config.d_head,
+            scale=config.scale, p_dropout=config.p_dropout_atten,
+        )
+        # Transformer layer
+        out = NeuralNetwork.transformer_layer_forward(
+            layer_params.attn, X_norm[:, :, None, :], attn_config, rng, training
+        )
+        out = out[:, :, 0, :] + layer_params.bo
+        # Add layer
+        X   = residual + out
+        residual = X
+
+        # Normalization layer
+        X_norm   = NeuralNetwork.layer_normalization_layer_forward(
+            layer_params.norm2, X, LayerNormConfig()
+        )
+        # FC layer
+        Z = NeuralNetwork.fc_layer_forward(
+            layer_params.fc1, X_norm, FCLayerConfig(activation="gelu", units=config.d_ff)
+        )
+        
+        # Dropout layer
+        Z = NeuralNetwork.dropout_layer_forward(
+            None, Z, DropoutConfig(p=config.p_dropout_fc), rng, training
+        )
+        
+        # FC layer
+        Z = NeuralNetwork.fc_layer_forward(
+            layer_params.fc2, Z, FCLayerConfig(activation="linear", units=d_model)
+        )
+
+        # Add layer
+        X   = residual + Z
+
+        return X[:, :, None, :]
+
+    @staticmethod
+    def branch_layer_forward(layer_params, X, config, saves):
+        return saves[config.skip]
+
+    @staticmethod
+    def cross_attention_layer_forward(layer_params, X, config, rng, training, residuals):
+        C = residuals[config.skip]
+        C = C[:, :, 0, :]
+
+        B, E, d_model = X.shape[0], X.shape[1], X.shape[3]
+        X = X[:, :, 0, :]
+        T = C.shape[1]
+
+        Q = X @ layer_params.Wq.T 
+        K = C @ layer_params.Wk.T  
+        V = C @ layer_params.Wv.T 
+
+        Q = Q.reshape(B, E, config.heads, config.d_head).transpose(0, 2, 1, 3)
+        K = K.reshape(B, T, config.heads, config.d_head).transpose(0, 2, 1, 3)
+        V = V.reshape(B, T, config.heads, config.d_head).transpose(0, 2, 1, 3)
+
+        scores  = (Q @ K.transpose(0, 1, 3, 2)) / config.scale 
+        weights = jax.nn.softmax(scores, axis=-1)
+
+        weights = NeuralNetwork.dropout_layer_forward(
+            None, weights, DropoutConfig(p=config.p_dropout), rng, training
+        )
+
+        out = weights @ V    
+        out = out.transpose(0, 2, 1, 3).reshape(B, E, d_model)
+        out = out @ layer_params.Wo.T
+
+        return out[:, :, None, :]   
 
     layer_forward_int = (
         lambda p, X, c, rng, training, saves: NeuralNetwork.flatten_layer_forward(p, X, c),
@@ -700,7 +1058,7 @@ class NeuralNetwork:
         lambda p, X, c, rng, training, saves: NeuralNetwork.pool_max_layer_forward(p, X, c),
         lambda p, X, c, rng, training, saves: NeuralNetwork.pool_sum_layer_forward(p, X, c),
         lambda p, X, c, rng, training, saves: NeuralNetwork.layer_normalization_layer_forward(p, X, c),
-        lambda p, X, c, rng, training, saves: NeuralNetwork.transformer_layer_forward(p, X, c),
+        lambda p, X, c, rng, training, saves: NeuralNetwork.transformer_layer_forward(p, X, c, rng, training),
         lambda p, X, c, rng, training, saves: NeuralNetwork.dropout_layer_forward(p, X, c, rng, training),
         lambda p, A, c, rng, training, saves: NeuralNetwork.add_layer_forward(p, A, c, saves),
         lambda p, A, c, rng, training, saves: NeuralNetwork.gpool_max_layer_forward(p, A, c),
@@ -708,6 +1066,13 @@ class NeuralNetwork:
         lambda p, A, c, rng, training, saves: NeuralNetwork.nearest_neighbour_upsampling_layer_forward(p, A, c),
         lambda p, A, c, rng, training, saves: NeuralNetwork.concatenation_layer_forward(p, A, c, saves),
         lambda p, A, c, rng, training, saves: NeuralNetwork.bilinear_upsampling_layer_forward(p, A, c),
+        lambda p, A, c, rng, training, saves: NeuralNetwork.bias_layer_forward(p, A, c),
+        lambda p, A, c, rng, training, saves: NeuralNetwork.flatten_spatial_layer_forward(p, A, c),
+        lambda p, A, c, rng, training, saves: NeuralNetwork.unflatten_spatial_layer_forward(p, A, c),
+        lambda p, X, c, rng, training, saves: NeuralNetwork.positional_embedding_2d_layer_forward(p, X, c),
+        lambda p, X, c, rng, training, saves: NeuralNetwork.transformer_encoder_layer_forward(p, X, c, rng, training),
+        lambda p, X, c, rng, training, saves: NeuralNetwork.branch_layer_forward(p, X, c, saves),
+        lambda p, X, c, rng, training, saves: NeuralNetwork.cross_attention_layer_forward(p, X, c, rng, training, saves),
     )
 
     @partial(jax.jit, static_argnames=("layer_configs_static", "layer_forward_int", "num_layers"))
@@ -724,6 +1089,20 @@ class NeuralNetwork:
             A = forward[layer_type](layer_params, A, config, subkey, training, saves)
             saves.append(A)
         return A
+
+    def forward_saves(params, X, num_layers, layer_configs_static, layer_forward_int, rng, training=True):
+        A       = X
+        saves   = [A]
+        configs = layer_configs_static
+        forward = layer_forward_int
+        for idx in range(num_layers):
+            config      = configs[idx]
+            layer_type  = config.type
+            layer_params = params[idx]
+            rng, subkey = random.split(rng)
+            A = forward[layer_type](layer_params, A, config, subkey, training, saves)
+            saves.append(A)
+        return saves  
 
     @staticmethod
     def MSE_loss_function(y_pred, y_true):
@@ -1182,6 +1561,12 @@ class NeuralNetwork:
             self.layer_configs_static, self.layer_forward_int, self.state.rng, training=False,
         )
 
+    def predict_saves(self,X):
+        return NeuralNetwork.forward_saves(
+            self.state.params["net"], X, self.num_layers,
+            self.layer_configs_static, self.layer_forward_int, self.state.rng, training=False,
+        )
+
     def plot_training_history(self, log_scale=False):
         train  = self.history["train"]
         val    = self.history["val"]
@@ -1260,7 +1645,7 @@ class NeuralNetwork:
         ax.set_title(title)
         ax.axis("off")
  
-    def plot_predictions(self, x_test, y_test=None, char_thresh=0.5, affinity_thresh=0.5, sample_check=False):
+    def plot_predictions(self, x_test, y_test=None, char_thresh=0.5, affinity_thresh=0.5, sample_check=False, title=None):
         x_batch       = x_test[None, ...]
         x_batch       = self.NHWC_check(x_batch)
         y_pred        = self.predict(x_batch)
@@ -1315,7 +1700,9 @@ class NeuralNetwork:
             ax[2].imshow(y_pred_sample[:, :, 1], cmap="hot", alpha=0.6)
             ax[2].set_title("Predicted Affinity Heatmap")
             ax[2].axis("off")
- 
+        if title:
+            fig.suptitle(title, fontsize=14, fontweight="bold")
+        plt.tight_layout()
         plt.tight_layout()
         if sample_check:
             plt.show(block=False)
