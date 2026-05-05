@@ -1,5 +1,5 @@
 ## Architecture
 
-For a full architecture overview, see:
-
-[Text detector architecture PDF](Text-detector-architecture.pdf)
+<p align="center">
+  <img src="docs/architecture.svg" alt="Manga Text Detector architecture" width="850">
+</p>
