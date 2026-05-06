@@ -152,7 +152,7 @@ class Inference:
             if f.lower().endswith((".png", ".jpg", ".jpeg"))
         )
         n = len(image_files)
-        for idx, fname in enumerate(image_files):
+        for idx, fname in enumerate(image_files[0:]):
             stem = Path(fname).stem
             save_path = Path(SELF_TRAINING_DIR) / f"{stem}.npz"
             if save_path.exists():

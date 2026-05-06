@@ -391,7 +391,7 @@ architecture = [
     {"type": "bilinear_upsampling", "scaling": 2},                                                         # 17
     {"type": "concatenation", "skip": 11},                                                                 # 18
     {"type": "conv", "filters": 256, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 19
-    {"type": "conv", "filters": 256, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 20                                                     # 17
+    {"type": "conv", "filters": 256, "kernel_size": 3, "stride": 1, "padding": 1, "activation": "relu"},   # 20
 
     # --- Decoder block 3 ---
     {"type": "bilinear_upsampling", "scaling": 2},                                                         # 21
@@ -418,14 +418,14 @@ architecture = [
 # ── Model ─────────────────────────────────────────────────────────────────────
 MODEL_TRAIN = ModelConfig(
     architecture  = architecture,
-    epochs        = 20000,
+    epochs        = 18000,
     learning_rate = 1e-4,
     mode          = "train",
     do_validation = True,
     live_metrics  = True,
     n_warmups     = 2,
     save_filepath = "checkpoints/weights.pkl",
-    #load_filepath = "checkpoints/weights.pkl",
+    load_filepath = "checkpoints/weights.pkl",
 )
 
 LOSSCONFIG = LossConfig(
@@ -466,7 +466,7 @@ MODEL_INFERENCE = ModelConfig(
     epochs        = 100,
     learning_rate = 1e-3,
     mode          = "inference",
-    load_filepath = "checkpoints/weights_epoch_18500.pkl",
+    load_filepath = "checkpoints/weights_epoch_14500.pkl",
 )
 
 CFG_INFERENCE = InferenceConfig(
