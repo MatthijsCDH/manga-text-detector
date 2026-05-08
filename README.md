@@ -21,11 +21,6 @@ The architecture is characterized by three main sequences:
 2. **Bottleneck**: This part combines dilated convolutions with a transformer encoder. The dilated convolutions expand the local receptive field, while the transformer encoder processes the compact feature map globally.
 3. **Decoder**: This part upsamples the feature maps back to the original image size and uses skip connections to recover detail.
 
-
-<p align="center">
-  <img src="docs/Architecture.SVG" alt="Manga Text Detector architecture" width="850">
-</p>
-
 For the full layer-by-layer explanation, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Data generation
