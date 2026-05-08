@@ -735,24 +735,20 @@ class SyntheticDataGenerator:
         n_spikes    = int(np_rng.integers(cfg.jagged_n_spikes[0], cfg.jagged_n_spikes[1] + 1))
         spike_ratio = np_rng.uniform(cfg.jagged_spike_ratio[0], cfg.jagged_spike_ratio[1])
 
-        # Outer ellipse (spike tips), inner ellipse (spike bases)
         a_outer = np.sqrt(2) * (x_rb / 2 + margin)
         b_outer = np.sqrt(2) * (y_rb / 2 + margin)
         a_inner = a_outer * spike_ratio
         b_inner = b_outer * spike_ratio
 
-        # 2*n_spikes points alternating between outer (tips) and inner (base)
         n_points = 2 * n_spikes
         angles   = np.linspace(0, 2 * np.pi, n_points, endpoint=False)
 
         points = []
         for i, angle in enumerate(angles):
             if i % 2 == 0:
-                # Spike tip on outer ellipse
                 r_x = a_outer * np.cos(angle)
                 r_y = b_outer * np.sin(angle)
             else:
-                # Spike base on inner ellipse
                 r_x = a_inner * np.cos(angle)
                 r_y = b_inner * np.sin(angle)
             points.append((cx + r_x, cy + r_y))
@@ -779,13 +775,9 @@ class SyntheticDataGenerator:
         a_base = np.sqrt(2) * (x_rb / 2 + margin)
         b_base = np.sqrt(2) * (y_rb / 2 + margin)
 
-        # Sample enough points to make the wave smooth
         n_points = frequency * 20
         angles   = np.linspace(0, 2 * np.pi, n_points, endpoint=False)
 
-        # Wavy radius: base ellipse radius modulated by a sine wave
-        # Ellipse radius at angle theta: r(theta) = 1 / sqrt((cos/a)^2 + (sin/b)^2)
-        # We modulate outward from this by amplitude * sin(frequency * theta)
         r_ellipse = 1.0 / np.sqrt((np.cos(angles) / a_base)**2 + (np.sin(angles) / b_base)**2)
         r_wavy    = r_ellipse + amplitude * np.sin(frequency * angles)
 
@@ -837,7 +829,6 @@ class SyntheticDataGenerator:
             elif shape == WAVY:
                 self.draw_wavy_bubble(draw, sx, sy, x_rb, y_rb, fill_color, outline_color, outline_w, margin, cfg, np_rng)
 
-        # Convert back
         for img_idx in range(self.N_images):
             arr = np.array(bg_pil[img_idx])
             if self.C == 1:
@@ -886,7 +877,6 @@ class SyntheticDataGenerator:
 
                     existing = lax.dynamic_slice(canvas, (y, x, 0), (glyph_h, glyph_w, 1))
 
-                    # ── white border ──
                     ink_mask = (glyph_masked[..., 0] < 1.0).astype(jnp.float32)
                     h_dil = lax.reduce_window(
                         ink_mask[None, None],
@@ -895,6 +885,7 @@ class SyntheticDataGenerator:
                         window_strides=(1, 1, 1, 1),
                         padding=((0,0),(0,0),(0,0),(border_r, border_r)),
                     )[0, 0]
+
                     dilated = lax.reduce_window(
                         h_dil[None, None],
                         init_value=0.0, computation=lax.max,
@@ -902,6 +893,7 @@ class SyntheticDataGenerator:
                         window_strides=(1, 1, 1, 1),
                         padding=((0,0),(0,0),(border_r, border_r),(0,0)),
                     )[0, 0, ..., None]
+
                     white_board = jnp.where(dilated > 0.0, 1.0, existing)
                     canvas = lax.dynamic_update_slice(
                         canvas,
@@ -909,7 +901,6 @@ class SyntheticDataGenerator:
                         (y, x, 0),
                     )
 
-                    # ── ink ──
                     patch     = lax.dynamic_slice(canvas, (y, x, 0), (glyph_h, glyph_w, 1))
                     new_patch = jnp.minimum(patch, glyph_masked)
                     canvas    = lax.dynamic_update_slice(
@@ -927,7 +918,7 @@ class SyntheticDataGenerator:
 
         return jax.vmap(make_single_image)(jnp.arange(N_images))
 
-    # ── Kernels and Heatmaps ──────────────────────────────────────────────────
+    # ── Heatmaps ──────────────────────────────────────────────────
     @staticmethod
     def make_kernels(sigma, radius, intensity, max_kernel_radius):
         ks = 2 * max_kernel_radius + 1
@@ -935,7 +926,7 @@ class SyntheticDataGenerator:
         GX, GY = np.meshgrid(grid, grid)
         dist_sq = GX**2 + GY**2
 
-        dist_sq   = dist_sq[None, :, :]    # (1, ks, ks)
+        dist_sq   = dist_sq[None, :, :]
         sigma     = sigma[:, None, None]
         radius    = radius[:, None, None]
         intensity = intensity[:, None, None]
@@ -1510,7 +1501,7 @@ if __name__ == "__main__":
     print("Start initialization")
     gen = SyntheticDataGenerator(config, workers_init=False, N_images = 4)
     print("Finished initialization")
-    images, targets = gen.generate_batch(rng=0)
+    images, targets = gen.generate_batch(rng=5)
     for i in range(gen.N_images):
         gen.plot_heatmaps(images, targets, idx=i)
     
